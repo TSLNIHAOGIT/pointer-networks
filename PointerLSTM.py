@@ -1,8 +1,10 @@
-import keras.backend as K
-from keras.activations import tanh, softmax
-from keras.engine import InputSpec
-from keras.layers import LSTM
-import keras
+#encoding=utf8
+import tensorflow.keras.backend as K
+from tensorflow.keras.activations import tanh, softmax
+from tensorflow.keras.layers import InputSpec
+from tensorflow.keras.layers import LSTM
+from tensorflow import keras
+import  tensorflow as tf
 
 
 class Attention(keras.layers.Layer):
@@ -69,6 +71,7 @@ class PointerLSTM(keras.layers.Layer):
 
     def call(self, x, training=None, mask=None, states=None):
         """
+        x.shape=(batch_size,time_step,dim)=(3,10,128),#x is encoder ouput
         :param Tensor x: Should be the output of the decoder
         :param Tensor states: last state of the decoder
         :param Tensor mask: The mask to apply
@@ -76,33 +79,59 @@ class PointerLSTM(keras.layers.Layer):
         """
 
         input_shape = self.input_spec[0].shape
-        en_seq = x
-        x_input = x[:, input_shape[1] - 1, :]
-        x_input = K.repeat(x_input, input_shape[1])
+        en_seq = x#TensorShape([3, 10, 128])
+        x_input = x[:, input_shape[1] - 1, :]##只取最后一个时间戳的,TensorShape([3, 128])
+        #重复一个2D张量。如果x具有shape(samples, dim)，并且n是2，则输出将有shape(samples, 2, dim),在第二个维度将数据重复
+        x_input = K.repeat(x_input, input_shape[1])#TensorShape([3, 10, 128])
         if states:
             initial_states = states
         else:
             initial_states = self.decoder.get_initial_state(x_input)
 
         constants = []
+        '''preprocessed_input.shape TensorShape([64, 10, 128])'''
         preprocessed_input, _, constants = self.decoder.process_inputs(
             x_input, initial_states, constants)
         constants.append(en_seq)
+        #self.step(preprocessed_input,initial_states)
+        ##这里preprocessed_input有时间维度，然后每个时间维度的数据，都要传给step函数调用
+        '''
+        k.rnn返回一个元组，(last_output, outputs, new_states)，实现了step的递归调用
+
+        last_output：shape为(samples, ...) 输出的rnn的最新输出。
+        
+        outputs：shape为(samples, time, ...)的张量，其中每个条目 outputs[s, t] 是样本 s 在时间 t 的步骤函数输出值。即step的输出，维度为(batch, 10)（无时间维度）
+        
+        new_states：张量列表，步长函数返回的最新状态，shape为(samples, ...)。
+        '''
         last_output, outputs, states = K.rnn(self.step, preprocessed_input,
                                              initial_states,
                                              go_backwards=self.decoder.lstm.go_backwards,
                                              constants=constants,
                                              input_length=input_shape[1])
-
+        
+        
+        # print('outputs',outputs.shape,outputs)#outputs (batch, 10, 10)
         return outputs
 
     def step(self, x_input, states):
-        x_input = K.expand_dims(x_input,1)
+        ##不太明白这个states为什么len是3，前面的都是2
+        #print('x_input 11',x_input.shape)#(batch, 128)
+        print('states shape={}'.format(len(states)))
+        x_input = K.expand_dims(x_input,1)#x_input.shape TensorShape([64, 1, 128])
         input_shape = self.input_spec[0].shape
         en_seq = states[-1]
-        _, [h, c] = self.decoder(x_input, states[:-1])
+        '''
+        h.shape TensorShape([64, 128])  ;c.shape  TensorShape([64, 128])'''
+        _, [h, c] = self.decoder(x_input, states[:-1])#states=[shape([64, 128]),shape([64, 128]),shape([64, 10, 128])]
         dec_seq = K.repeat(h, input_shape[1])
+        '''
+        dec_seq.shape TensorShape([64, 10, 128]);
+        en_seq.shape  TensorShape([64, 10, 128])
+        '''
         probs = self.attention(dec_seq, en_seq)
+        # print('probs.shape={}'.format(probs.shape))#(batch, 10)
+
         return probs, [h, c]
 
     def get_output_shape_for(self, input_shape):
